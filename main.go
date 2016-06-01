@@ -66,11 +66,17 @@ func findHandler(method, path string) (router, []string) {
 }
 
 func handler(w http.ResponseWriter, req *http.Request) {
+	start := time.Now()
+
 	route, hparts := findHandler(req.Method, req.URL.Path)
 
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-type", "application/json")
 	route.Handler(hparts, w, req)
+
+	end := time.Now()
+	latency := end.Sub(start)
+	log.Printf("%13v %s", latency, req.Method)
 }
 
 func main() {
