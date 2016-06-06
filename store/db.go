@@ -15,6 +15,9 @@ const magic uint32 = 0xED0CDAED
 // The data file format version.
 const version = 1
 
+// The largest step that can be taken when remapping the mmap.
+const maxMmapStep = 1 << 30 // 1GB
+
 type DB struct {
 	path     string
 	file     *os.File
@@ -22,9 +25,14 @@ type DB struct {
 	meta0    *meta
 	meta1    *meta
 	pageSize int
+	rwtx     *Tx
+	txs      []*Tx
 
-	rwlock   sync.Mutex // Allows only one writer at a time.
-	metalock sync.Mutex // Protects meta page access.
+	nodes map[pgid]*node // node cache
+
+	rwlock   sync.Mutex   // Allows only one writer at a time.
+	metalock sync.Mutex   // Protects meta page access.
+	mmaplock sync.RWMutex // Protects mmap access during remapping.
 
 	dataref []byte // mmap'ed readonly, write throws SEGV
 	data    *[maxMapSize]byte
@@ -49,6 +57,9 @@ func Open(path string, mode os.FileMode) (*DB, error) {
 		_ = db.close()
 		return nil, err
 	}
+
+	// Default values for test hooks
+	db.ops.writeAt = db.file.WriteAt
 
 	if info, err := db.file.Stat(); err != nil {
 		return nil, err
@@ -75,6 +86,12 @@ func Open(path string, mode os.FileMode) (*DB, error) {
 				db.pageSize = int(m.pageSize)
 			}
 		}
+	}
+
+	// Memory map the data file.
+	if err := db.mmap(0); err != nil {
+		_ = db.close()
+		return nil, err
 	}
 
 	// Mark the database as opened and return.
@@ -104,7 +121,7 @@ func (db *DB) init() error {
 		m.version = version
 		m.pageSize = uint32(db.pageSize)
 		m.freelist = 2
-		m.bucket = 3
+		m.data = 3
 		m.pgid = 4
 		m.txid = txid(i)
 		m.checksum = m.sum64()
@@ -130,6 +147,100 @@ func (db *DB) init() error {
 		return err
 	}
 
+	return nil
+}
+
+// mmap opens the underlying memory-mapped file and initializes the meta references.
+// minsz is the minimum size that the new mmap can be.
+func (db *DB) mmap(minsz int) error {
+	db.mmaplock.Lock()
+	defer db.mmaplock.Unlock()
+
+	info, err := db.file.Stat()
+	if err != nil {
+		return fmt.Errorf("mmap stat error: %s", err)
+	} else if int(info.Size()) < db.pageSize*2 {
+		return fmt.Errorf("file size too small")
+	}
+
+	// Ensure the size is at least the minimum size.
+	var size = int(info.Size())
+	if size < minsz {
+		size = minsz
+	}
+	size, err = db.mmapSize(size)
+	if err != nil {
+		return err
+	}
+
+	// Unmap existing data before continuing.
+	if err := db.munmap(); err != nil {
+		return err
+	}
+
+	// Memory-map the data file as a byte slice.
+	if err := mmap(db, size); err != nil {
+		return err
+	}
+
+	// Save references to the meta pages.
+	db.meta0 = db.page(0).meta()
+	db.meta1 = db.page(1).meta()
+
+	// Validate the meta pages. We only return an error if both meta pages fail
+	// validation, since meta0 failing validation means that it wasn't saved
+	// properly -- but we can recover using meta1. And vice-versa.
+	err0 := db.meta0.validate()
+	err1 := db.meta1.validate()
+	if err0 != nil && err1 != nil {
+		return err0
+	}
+
+	return nil
+}
+
+// mmapSize determines the appropriate size for the mmap given the current size
+// of the database. The minimum size is 32KB and doubles until it reaches 1GB.
+// Returns an error if the new mmap size is greater than the max allowed.
+func (db *DB) mmapSize(size int) (int, error) {
+	// Double the size from 32KB until 1GB.
+	for i := uint(15); i <= 30; i++ {
+		if size <= 1<<i {
+			return 1 << i, nil
+		}
+	}
+
+	// Verify the requested size is not above the maximum allowed.
+	if size > maxMapSize {
+		return 0, fmt.Errorf("mmap too large")
+	}
+
+	// If larger than 1GB then grow by 1GB at a time.
+	sz := int64(size)
+	if remainder := sz % int64(maxMmapStep); remainder > 0 {
+		sz += int64(maxMmapStep) - remainder
+	}
+
+	// Ensure that the mmap size is a multiple of the page size.
+	// This should always be true since we're incrementing in MBs.
+	pageSize := int64(db.pageSize)
+	if (sz % pageSize) != 0 {
+		sz = ((sz / pageSize) + 1) * pageSize
+	}
+
+	// If we've exceeded the max size then only grow up to the max size.
+	if sz > maxMapSize {
+		sz = maxMapSize
+	}
+
+	return int(sz), nil
+}
+
+// munmap unmaps the data file from memory.
+func (db *DB) munmap() error {
+	if err := munmap(db); err != nil {
+		return fmt.Errorf("unmap error: " + err.Error())
+	}
 	return nil
 }
 
@@ -162,19 +273,14 @@ func (db *DB) pageInBuffer(b []byte, id pgid) *page {
 	return (*page)(unsafe.Pointer(&b[id*pgid(db.pageSize)]))
 }
 
-func (db *DB) Get(key []int64) []byte {
-	k, v, flags := db.Cursor().seek(key)
-
-	// Return nil if this is a bucket.
-	if flags != 0 {
-		return nil
-	}
+func (db *DB) Get(key int64) ([]byte, error) {
+	k, v, _ := db.Cursor().seek(key)
 
 	// If our target node isn't the same key as what's passed in then return nil.
-	if !bytes.Equal(key, k) {
-		return nil
+	if key != k {
+		return nil, ErrNotFound
 	}
-	return v
+	return v, nil
 }
 
 // Insert data, key is unixnano.
@@ -187,13 +293,39 @@ func (db *DB) Put(key int64, value map[string]float64) error {
 	// Move cursor to correct position.
 	c := db.Cursor()
 	c.seek(key)
-	c.node().put(key, value)
-	ErrCommit := t.Commit()
-	if ErrCommit != nil {
-		return ErrCommit
+	return t.Commit()
+}
+
+func (db *DB) beginRWTx() (*Tx, error) {
+	// Obtain writer lock. This is released by the transaction when it closes.
+	// This enforces only one writer transaction at a time.
+	db.rwlock.Lock()
+
+	// Once we have the writer lock then we can lock the meta pages so that
+	// we can set up the transaction.
+	db.metalock.Lock()
+	defer db.metalock.Unlock()
+
+	// Exit if the database is not open yet.
+	if !db.opened {
+		db.rwlock.Unlock()
+		return nil, ErrDatabaseNotOpen
 	}
 
-	return nil
+	// Create a transaction associated with the database.
+	t := &Tx{writable: true}
+	t.init(db)
+	db.rwtx = t
+
+	// Free any pages associated with closed read-only transactions.
+	var minid txid = 0xFFFFFFFFFFFFFFFF
+	for _, t := range db.txs {
+		if t.meta.txid < minid {
+			minid = t.meta.txid
+		}
+	}
+
+	return t, nil
 }
 
 func (db *DB) Cursor() *Cursor {
@@ -283,6 +415,11 @@ func (m *meta) validate() error {
 		return ErrChecksum
 	}
 	return nil
+}
+
+// copy copies one meta object to another.
+func (m *meta) copy(dest *meta) {
+	*dest = *m
 }
 
 // generates the checksum for the meta.

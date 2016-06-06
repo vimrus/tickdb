@@ -5,6 +5,13 @@ import (
 )
 
 var (
+	// ErrDatabaseNotOpen is returned when a DB instance is accessed before it
+	// is opened or after it is closed.
+	ErrDatabaseNotOpen = errors.New("database not open")
+
+	// ErrNotFound is returned when key is not exists.
+	ErrNotFound = errors.New("key not found")
+
 	// ErrInvalid is returned when both meta pages on a database are invalid.
 	// This typically occurs when a file is not a database.
 	ErrInvalid = errors.New("invalid database")

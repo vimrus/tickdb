@@ -34,11 +34,12 @@ func Test_Update(t *testing.T) {
 		"bar": 1.2,
 	}
 
-	if err := db.Put(t, v); err != nil {
+	if err := db.Put(k, v); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Get(t); err != nil {
-		t.Fatalf(err)
+	_, errGet := db.Get(k)
+	if errGet != nil {
+		t.Fatal(errGet)
 	}
 	if err := db.Close(); err != nil {
 		log.Fatal(err)
