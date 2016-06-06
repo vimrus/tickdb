@@ -133,9 +133,75 @@ func (db *DB) init() error {
 	return nil
 }
 
+// meta retrieves the current meta page reference.
+func (db *DB) meta() *meta {
+	// We have to return the meta with the highest txid which doesn't fail
+	// validation. Otherwise, we can cause errors when in fact the database is
+	// in a consistent state. metaA is the one with the higher txid.
+	metaA := db.meta0
+	metaB := db.meta1
+	if db.meta1.txid > db.meta0.txid {
+		metaA = db.meta1
+		metaB = db.meta0
+	}
+
+	// Use higher meta page if valid. Otherwise fallback to previous, if valid.
+	if err := metaA.validate(); err == nil {
+		return metaA
+	} else if err := metaB.validate(); err == nil {
+		return metaB
+	}
+
+	// This should never be reached, because both meta1 and meta0 were validated
+	// on mmap() and we do fsync() on every write.
+	panic("db.meta(): invalid meta pages")
+}
+
 // pageInBuffer retrieves a page reference from a given byte array based on the current page size.
 func (db *DB) pageInBuffer(b []byte, id pgid) *page {
 	return (*page)(unsafe.Pointer(&b[id*pgid(db.pageSize)]))
+}
+
+func (db *DB) Get(key []int64) []byte {
+	k, v, flags := db.Cursor().seek(key)
+
+	// Return nil if this is a bucket.
+	if flags != 0 {
+		return nil
+	}
+
+	// If our target node isn't the same key as what's passed in then return nil.
+	if !bytes.Equal(key, k) {
+		return nil
+	}
+	return v
+}
+
+// Insert data, key is unixnano.
+func (db *DB) Put(key int64, value map[string]float64) error {
+	t, err := db.beginRWTx()
+	if err != nil {
+		return err
+	}
+
+	// Move cursor to correct position.
+	c := db.Cursor()
+	c.seek(key)
+	c.node().put(key, value)
+	ErrCommit := t.Commit()
+	if ErrCommit != nil {
+		return ErrCommit
+	}
+
+	return nil
+}
+
+func (db *DB) Cursor() *Cursor {
+	// Allocate and return a cursor.
+	return &Cursor{
+		db:    db,
+		stack: make([]elemRef, 0),
+	}
 }
 
 // Close releases all database resources.
@@ -175,13 +241,33 @@ func (db *DB) close() error {
 	return nil
 }
 
+// pageNode returns the in-memory node, if it exists.
+// Otherwise returns the underlying page.
+func (db *DB) pageNode(id pgid) (*page, *node) {
+	// Check the node cache.
+	if db.nodes != nil {
+		if n := db.nodes[id]; n != nil {
+			return nil, n
+		}
+	}
+
+	// Finally lookup the page from the transaction if no node is materialized.
+	return db.page(id), nil
+}
+
+// page retrieves a page reference from the mmap based on the current page size.
+func (db *DB) page(id pgid) *page {
+	pos := id * pgid(db.pageSize)
+	return (*page)(unsafe.Pointer(&db.data[pos]))
+}
+
 type meta struct {
 	magic    uint32
 	version  uint32
 	pageSize uint32
 	flags    uint32
 	freelist pgid
-	bucket   pgid
+	data     pgid
 	pgid     pgid
 	txid     txid
 	checksum uint64
@@ -204,4 +290,11 @@ func (m *meta) sum64() uint64 {
 	var h = fnv.New64a()
 	_, _ = h.Write((*[unsafe.Offsetof(meta{}.checksum)]byte)(unsafe.Pointer(m))[:])
 	return h.Sum64()
+}
+
+// _assert will panic with a given formatted message if the given condition is false.
+func _assert(condition bool, msg string, v ...interface{}) {
+	if !condition {
+		panic(fmt.Sprintf("assertion failed: "+msg, v...))
+	}
 }

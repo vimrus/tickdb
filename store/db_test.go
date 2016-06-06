@@ -3,6 +3,7 @@ package store
 import (
 	"log"
 	"testing"
+	"time"
 )
 
 func TestOpen(t *testing.T) {
@@ -18,6 +19,27 @@ func TestOpen(t *testing.T) {
 		t.Fatalf("unexpected path: %s", s)
 	}
 
+	if err := db.Close(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func Test_Update(t *testing.T) {
+	path := "/tmp/t"
+	db, _ := Open(path, 0600)
+
+	k := time.Now().UnixNano()
+	v := map[string]float64{
+		"foo": 1.1,
+		"bar": 1.2,
+	}
+
+	if err := db.Put(t, v); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Get(t); err != nil {
+		t.Fatalf(err)
+	}
 	if err := db.Close(); err != nil {
 		log.Fatal(err)
 	}
