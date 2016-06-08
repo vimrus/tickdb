@@ -2,13 +2,16 @@ package store
 
 import (
 	"log"
+	"os"
 	"testing"
 	"time"
 )
 
 func TestOpen(t *testing.T) {
 	path := "/tmp/t"
-	db, err := Open(path, 0600)
+	os.Remove(path)
+
+	db, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	} else if db == nil {
@@ -26,7 +29,9 @@ func TestOpen(t *testing.T) {
 
 func Test_Update(t *testing.T) {
 	path := "/tmp/t"
-	db, _ := Open(path, 0600)
+	os.Remove(path)
+
+	db, _ := Open(path)
 
 	k := time.Now().UnixNano()
 	v := map[string]float64{

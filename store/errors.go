@@ -25,4 +25,8 @@ var (
 	// ErrTimeout is returned when a database cannot obtain an exclusive lock
 	// on the data file after the timeout passed to Open().
 	ErrTimeout = errors.New("timeout")
+
+	ErrChunkBadCrc = errors.New("chunk crc bad")
+
+	ErrChunkDataLessThanSize = errors.New("chunk data less than size")
 )
