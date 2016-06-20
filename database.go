@@ -113,16 +113,15 @@ func dbstore(path string, k int64, data []PostData) error {
 
 func dbget(path string, index string, field string, ts int64) (interface{}, error) {
 	db, dbErr := dbconn(path)
-
 	if dbErr != nil {
 		return nil, dbErr
 	}
+	
 	i, iErr := db.NewIterator(index, field)
-	defer i.Close()
-
 	if iErr != nil {
 		return nil, iErr
 	}
+	defer i.Close()
 
 	seekErr := i.Seek(ts)
 	if seekErr != nil {
