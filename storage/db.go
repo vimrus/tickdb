@@ -149,6 +149,16 @@ func (db *DB) Put(key int64, value map[string]float64) error {
 	return c.node().put(&tm, value)
 }
 
+func (db *DB) Delete(from int64, to int64) {
+	fromTime := NewTime(from)
+	toTime := NewTime(to)
+
+	empty := db.root.clean(&fromTime, &toTime)
+	if empty {
+		db.root.isLeaf = true
+	}
+}
+
 func (db *DB) Cursor() *Cursor {
 	// Allocate and return a cursor.
 	return &Cursor{

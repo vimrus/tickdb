@@ -192,7 +192,10 @@ func (db *DB) newInteriorNode() *node {
 func (n *node) flush() int64 {
 	flags := n.level
 	if !n.isLeaf {
-		n.pointers[n.dirty].pos = n.pointers[n.dirty].pointer.flush()
+		if n.dirty != -1 {
+			n.pointers[n.dirty].pos = n.pointers[n.dirty].pointer.flush()
+			n.dirty = -1
+		}
 		flags = flags | InteriorChunkFlag
 	} else {
 		flags = flags | LeafChunkFlag
@@ -311,6 +314,202 @@ func (n *node) expand() {
 	}
 }
 
+func (n *node) clean(from, to *Time) bool {
+	if n.isLeaf {
+		index := sort.Search(len(n.points), func(i int) bool {
+			return n.points[i].Timestamp >= from.TS
+		})
+		for i, point := range n.points[index:] {
+			if point.Timestamp >= to.TS {
+				n.points = append(n.points[:index], n.points[i:]...)
+			}
+			break
+		}
+		if len(n.points) == 0 {
+			return true
+		}
+		return false
+	}
+
+	f := from.Timestamp(n.level << 1).UnixNano()
+	t := to.Timestamp(n.level << 1).UnixNano()
+	// if from and to in the same node, step in.
+	if f == t {
+		index := sort.Search(len(n.pointers), func(i int) bool {
+			return n.pointers[i].key >= f
+		})
+		if n.pointers[index].key == f {
+			if index != n.dirty {
+				if n.dirty != -1 {
+					n.pointers[n.dirty].pos = n.pointers[n.dirty].pointer.flush()
+				}
+				n.dirty = index
+			}
+			if n.pointers[index].pointer == nil {
+				var err error
+				n.pointers[index].pointer, err = n.db.node(n.pointers[index].pos)
+				if err != nil {
+					return true
+				}
+			}
+			if empty := n.pointers[index].pointer.clean(from, to); empty {
+				if len(n.pointers) == 1 {
+					return true
+				}
+				n.pointers = append(n.pointers[:index], n.pointers[index+1:]...)
+				return false
+			}
+		}
+	} else {
+		fromIndex := sort.Search(len(n.pointers), func(i int) bool {
+			return n.pointers[i].key >= f
+		})
+		if n.pointers[fromIndex].key == f {
+			// if from time is the begin of node, drop it directly.
+			if f != from.TS {
+				n.dirty = fromIndex
+				if n.pointers[fromIndex].pointer != nil {
+					var err error
+					n.pointers[fromIndex].pointer, err = n.db.node(n.pointers[fromIndex].pos)
+					if err != nil {
+						return true
+					}
+				}
+				empty := n.pointers[fromIndex].pointer.cleanFrom(from)
+				if !empty {
+					n.pointers[fromIndex].pointer.reduce()
+					n.pointers[fromIndex].pos = n.pointers[fromIndex].pointer.flush()
+
+					// persist fromIndex
+					fromIndex++
+				}
+			}
+		}
+
+		toIndex := fromIndex
+		for i, pointer := range n.pointers[toIndex:] {
+			if pointer.key >= t {
+				if pointer.key == t {
+					toIndex = fromIndex + i
+					if t != to.TS {
+						if n.pointers[toIndex].pointer == nil {
+							var err error
+							n.pointers[toIndex].pointer, err = n.db.node(n.pointers[toIndex].pos)
+							if err != nil {
+								return true
+							}
+						}
+						empty := n.pointers[toIndex].pointer.cleanTo(to)
+						if !empty {
+							n.pointers[toIndex].pointer.reduce()
+							n.pointers[toIndex].pos = n.pointers[toIndex].pointer.flush()
+						} else {
+							toIndex++
+						}
+						break
+					}
+				}
+			}
+		}
+		n.pointers = append(n.pointers[:fromIndex], n.pointers[toIndex:]...)
+		if len(n.pointers) == 0 {
+			return true
+		}
+		n.dirty = -1
+	}
+	return false
+}
+
+func (n *node) cleanFrom(from *Time) bool {
+	if n.isLeaf {
+		index := sort.Search(len(n.points), func(i int) bool {
+			return n.points[i].Timestamp >= from.TS
+		})
+		if index == 0 {
+			return true
+		}
+		n.points = n.points[:index]
+		return false
+	} else {
+		f := from.Timestamp(n.level << 1).UnixNano()
+		fromIndex := sort.Search(len(n.pointers), func(i int) bool {
+			return n.pointers[i].key >= f
+		})
+
+		if n.pointers[fromIndex].key == f {
+			// if from time is the begin of node, drop it directly.
+			if f != from.TS {
+				if n.pointers[fromIndex].pointer == nil {
+					var err error
+					n.pointers[fromIndex].pointer, err = n.db.node(n.pointers[fromIndex].pos)
+					if err != nil {
+						return true
+					}
+				}
+				empty := n.pointers[fromIndex].pointer.cleanFrom(from)
+				if !empty {
+					n.dirty = fromIndex
+					n.pointers[fromIndex].pointer.reduce()
+					n.pointers[fromIndex].pos = n.pointers[fromIndex].pointer.flush()
+
+					// persist fromIndex
+					fromIndex++
+				}
+			}
+		}
+		if fromIndex == 0 {
+			return true
+		}
+		n.pointers = n.pointers[:fromIndex]
+		return false
+	}
+}
+
+func (n *node) cleanTo(to *Time) bool {
+	if n.isLeaf {
+		index := sort.Search(len(n.points), func(i int) bool {
+			return n.points[i].Timestamp >= to.TS
+		})
+		if index == len(n.points) {
+			return true
+		}
+		n.points = n.points[index:]
+		return false
+	} else {
+		t := to.Timestamp(n.level << 1).UnixNano()
+		toIndex := sort.Search(len(n.pointers), func(i int) bool {
+			return n.pointers[i].key >= t
+		})
+
+		if toIndex == len(n.pointers) {
+			return true
+		}
+		if n.pointers[toIndex].key == t {
+			if t != to.TS {
+				if n.pointers[toIndex].pointer == nil {
+					var err error
+					n.pointers[toIndex].pointer, err = n.db.node(n.pointers[toIndex].pos)
+					if err != nil {
+						return true
+					}
+				}
+				empty := n.pointers[toIndex].pointer.cleanTo(to)
+				if !empty {
+					n.pointers[toIndex].pointer.reduce()
+					n.pointers[toIndex].pos = n.pointers[toIndex].pointer.flush()
+				} else {
+					toIndex++
+				}
+			}
+		}
+		if toIndex == len(n.pointers) {
+			return true
+		}
+		n.pointers = n.pointers[toIndex:]
+		return false
+	}
+}
+
 func (n *node) reduce() map[string]Value {
 	value := make(map[string]Value)
 	if n.isLeaf {
@@ -342,7 +541,9 @@ func (n *node) reduce() map[string]Value {
 			}
 		}
 	} else {
-		n.pointers[n.dirty].value = n.pointers[n.dirty].pointer.reduce()
+		if n.dirty != -1 {
+			n.pointers[n.dirty].value = n.pointers[n.dirty].pointer.reduce()
+		}
 		for index, pointer := range n.pointers {
 			for k, v := range pointer.value {
 				if vk, ok := value[k]; !ok {

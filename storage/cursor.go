@@ -34,6 +34,7 @@ func (c *Cursor) fix(t *Time, n *node) error {
 	// If the inserted node is not equal dirty node, flush the dirty.
 	// Only one dirty branch in the tree.
 	if n.dirty != -1 && n.dirty != index {
+		n.pointers[n.dirty].pointer.reduce()
 		n.pointers[n.dirty].pos = n.pointers[n.dirty].pointer.flush()
 	}
 
@@ -68,7 +69,7 @@ func (c *Cursor) seek(seek int64) *Point {
 	// Start from root and traverse to correct position.
 	c.stack = c.stack[:0]
 	t := NewTime(seek)
-	c.search(&t, c.db.meta.root)
+	c.search(&t, c.db.root)
 	ref := &c.stack[len(c.stack)-1]
 
 	// If the cursor is pointing to the end of node then return nil.
@@ -83,20 +84,19 @@ func (c *Cursor) seek(seek int64) *Point {
 // next moves the cursor to next node and return it.
 func (c *Cursor) next() *Point {
 	ref := &c.stack[len(c.stack)-1]
-	if ref.count() == 0 || ref.index+1 >= ref.count() {
+	ref.index++
+	if ref.count() == 0 || ref.index >= ref.count() {
 		if len(c.stack) <= 1 {
 			return nil
 		}
 		c.stack = c.stack[:len(c.stack)-1]
 		ref = &c.stack[len(c.stack)-1]
-		ref.index++
 
 		return c.next()
 	}
 
-	ref.index++
 	if !ref.node.isLeaf && ref.node.level < c.level>>1 {
-		err := c.find()
+		err := c.first()
 		if err != nil {
 			return nil
 		}
@@ -105,16 +105,22 @@ func (c *Cursor) next() *Point {
 }
 
 // find the first node equal the level.
-func (c *Cursor) find() error {
+func (c *Cursor) first() error {
 	ref := &c.stack[len(c.stack)-1]
-	n, err := c.db.node(ref.node.pointers[ref.index].pos)
-	if err != nil {
-		return err
+	var n *node
+	if ref.node.pointers[ref.index].pointer == nil {
+		var err error
+		n, err = c.db.node(ref.node.pointers[ref.index].pos)
+		if err != nil {
+			return err
+		}
+	} else {
+		n = ref.node.pointers[ref.index].pointer
 	}
 	if !n.isLeaf && n.level < c.level>>1 {
 		e := elemRef{node: n}
 		c.stack = append(c.stack, e)
-		c.find()
+		c.first()
 	}
 	return nil
 }
@@ -159,12 +165,7 @@ func (c *Cursor) keyValue() *Point {
 }
 
 // search recursively performs a binary search against a given node until it finds a given key.
-func (c *Cursor) search(t *Time, pos int64) error {
-	n, err := c.db.node(pos)
-	if err != nil {
-		return err
-	}
-
+func (c *Cursor) search(t *Time, n *node) error {
 	e := elemRef{node: n}
 	c.stack = append(c.stack, e)
 
@@ -190,7 +191,14 @@ func (c *Cursor) searchInterior(t *Time) {
 	}
 
 	// Recursively search to the next page.
-	c.search(t, n.pointers[index].pos)
+	if n.pointers[index].pointer == nil {
+		var err error
+		n.pointers[index].pointer, err = n.db.node(n.pointers[index].pos)
+		if err != nil {
+			return
+		}
+	}
+	c.search(t, n.pointers[index].pointer)
 }
 
 func (c *Cursor) searchLeaf(t *Time) {
