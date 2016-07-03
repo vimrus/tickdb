@@ -63,45 +63,34 @@ func (c *Cursor) fix(t *Time, n *node) error {
 
 // seek moves the cursor to a given key and returns it.
 // If the key does not exist then the next key is used.
-func (c *Cursor) seek(seek int64) *Point {
+func (c *Cursor) seek(seek int64) {
 	_assert(c.db != nil, "tx closed")
 
 	// Start from root and traverse to correct position.
 	c.stack = c.stack[:0]
 	t := NewTime(seek)
 	c.search(&t, c.db.root)
-	ref := &c.stack[len(c.stack)-1]
-
-	// If the cursor is pointing to the end of node then return nil.
-	if ref.index >= ref.count() {
-		return nil
-	}
-
-	// If this is a bucket then return a nil value.
-	return c.keyValue()
 }
 
-// next moves the cursor to next node and return it.
-func (c *Cursor) next() *Point {
+// next moves the cursor to next node.
+func (c *Cursor) next() bool {
 	ref := &c.stack[len(c.stack)-1]
 	ref.index++
 	if ref.count() == 0 || ref.index >= ref.count() {
 		if len(c.stack) <= 1 {
-			return nil
+			return true
 		}
 		c.stack = c.stack[:len(c.stack)-1]
 		ref = &c.stack[len(c.stack)-1]
 
-		return c.next()
+		c.next()
+		return false
 	}
 
 	if !ref.node.isLeaf && ref.node.level < c.level>>1 {
-		err := c.first()
-		if err != nil {
-			return nil
-		}
+		c.first()
 	}
-	return c.keyValue()
+	return false
 }
 
 // find the first node equal the level.
@@ -117,51 +106,79 @@ func (c *Cursor) first() error {
 	} else {
 		n = ref.node.pointers[ref.index].pointer
 	}
+
+	e := elemRef{node: n}
+	c.stack = append(c.stack, e)
+
 	if !n.isLeaf && n.level < c.level>>1 {
-		e := elemRef{node: n}
-		c.stack = append(c.stack, e)
-		c.first()
+		return c.first()
+	}
+
+	return nil
+}
+
+// prev moves the cursor to next node.
+func (c *Cursor) prev() bool {
+	ref := &c.stack[len(c.stack)-1]
+	ref.index--
+	if ref.count() == 0 || ref.index < 0 {
+		if len(c.stack) <= 1 {
+			return true
+		}
+		c.stack = c.stack[:len(c.stack)-1]
+		ref = &c.stack[len(c.stack)-1]
+
+		return c.prev()
+	}
+
+	if !ref.node.isLeaf && ref.node.level < c.level>>1 {
+		c.last()
+	}
+	return false
+}
+
+// find the last node equal the level.
+func (c *Cursor) last() error {
+	ref := &c.stack[len(c.stack)-1]
+	var n *node
+	if ref.node.pointers[ref.index].pointer == nil {
+		var err error
+		n, err = c.db.node(ref.node.pointers[ref.index].pos)
+		if err != nil {
+			return err
+		}
+	} else {
+		n = ref.node.pointers[ref.index].pointer
+	}
+
+	e := elemRef{node: n, index: len(n.pointers) - 1}
+	c.stack = append(c.stack, e)
+
+	if !n.isLeaf && n.level < c.level>>1 {
+		return c.last()
 	}
 	return nil
 }
 
+func (c *Cursor) points() []*Point {
+	var points []*Point
+	ref := &c.stack[len(c.stack)-1]
+	if ref.count() == 0 || ref.index >= ref.count() {
+		return points
+	}
+	for i := ref.index; i < ref.count(); i++ {
+		points = append(points, ref.point(c.reducer))
+	}
+	return points
+}
+
 // keyValue returns the key and value of the current cursor.
-func (c *Cursor) keyValue() *Point {
+func (c *Cursor) point() *Point {
 	ref := &c.stack[len(c.stack)-1]
 	if ref.count() == 0 || ref.index >= ref.count() {
 		return nil
 	}
-
-	if ref.isLeaf() {
-		point := ref.node.points[ref.index]
-		return point
-	}
-
-	pointer := ref.node.pointers[ref.index]
-
-	value := make(map[string]float64)
-	for k, v := range pointer.value {
-		switch c.reducer[k] {
-		case "sum":
-			value[k] = v.sum
-		case "max":
-			value[k] = v.max
-		case "min":
-			value[k] = v.min
-		case "first":
-			value[k] = v.first
-		case "last":
-			value[k] = v.last
-		case "count":
-			value[k] = float64(v.count)
-		case "avg":
-			value[k] = v.sum / float64(v.count)
-		}
-	}
-	return &Point{
-		Timestamp: pointer.key,
-		Value:     value,
-	}
+	return ref.point(c.reducer)
 }
 
 // search recursively performs a binary search against a given node until it finds a given key.
@@ -169,7 +186,7 @@ func (c *Cursor) search(t *Time, n *node) error {
 	e := elemRef{node: n}
 	c.stack = append(c.stack, e)
 
-	if e.isLeaf() {
+	if n.isLeaf {
 		c.searchLeaf(t)
 	} else {
 		c.searchInterior(t)
@@ -190,7 +207,11 @@ func (c *Cursor) searchInterior(t *Time) {
 		return
 	}
 
-	// Recursively search to the next page.
+	if index >= len(n.pointers) {
+		c.next()
+		return
+	}
+
 	if n.pointers[index].pointer == nil {
 		var err error
 		n.pointers[index].pointer, err = n.db.node(n.pointers[index].pos)
@@ -209,6 +230,11 @@ func (c *Cursor) searchLeaf(t *Time) {
 		return n.points[i].Timestamp >= ts
 	})
 	e.index = index
+
+	if index >= len(n.points) {
+		c.next()
+		return
+	}
 }
 
 // node returns the node that the cursor is currently positioned on.
@@ -235,4 +261,89 @@ func (r *elemRef) count() int {
 		return len(r.node.points)
 	}
 	return len(r.node.pointers)
+}
+
+func (r *elemRef) point(reducer map[string]string) *Point {
+	if r.isLeaf() {
+		point := r.node.points[r.index]
+		value := make(map[string]float64)
+
+		for field, _ := range reducer {
+			if field == "count" {
+				value["count"] = 1
+			} else {
+				v, ok := point.Value[field]
+				if ok {
+					value[field] = v
+				} else {
+					value[field] = 0.0
+				}
+			}
+		}
+		point.Value = value
+		return point
+	}
+
+	pointer := r.node.pointers[r.index]
+	value := make(map[string]float64)
+
+	for field, r := range reducer {
+		switch r {
+		case "sum":
+			v, ok := pointer.value[field]
+			if ok {
+				value[field] = v.sum
+			} else {
+				value[field] = 0.0
+			}
+		case "max":
+			v, ok := pointer.value[field]
+			if ok {
+				value[field] = v.max
+			} else {
+				value[field] = 0.0
+			}
+		case "min":
+			v, ok := pointer.value[field]
+			if ok {
+				value[field] = v.min
+			} else {
+				value[field] = 0.0
+			}
+		case "first":
+			v, ok := pointer.value[field]
+			if ok {
+				value[field] = v.first
+			} else {
+				value[field] = 0.0
+			}
+		case "last":
+			v, ok := pointer.value[field]
+			if ok {
+				value[field] = v.last
+			} else {
+				value[field] = 0.0
+			}
+		case "count":
+			v, ok := pointer.value[field]
+			if ok {
+				value[field] = v.last
+			} else {
+				value[field] = 0.0
+			}
+		case "avg":
+			fallthrough
+		case "ma":
+			v, ok := pointer.value[field]
+			if ok {
+				value[field] = v.sum / float64(v.count)
+			} else {
+				value[field] = 0.0
+			}
+		}
+	}
+	return &Point{
+		Timestamp: pointer.key,
+		Value:     value,
+	}
 }

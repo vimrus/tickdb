@@ -361,6 +361,7 @@ func (n *node) clean(from, to *Time) bool {
 			}
 		}
 	} else {
+		n.dirty = -1
 		fromIndex := sort.Search(len(n.pointers), func(i int) bool {
 			return n.pointers[i].key >= f
 		})
@@ -415,7 +416,6 @@ func (n *node) clean(from, to *Time) bool {
 		if len(n.pointers) == 0 {
 			return true
 		}
-		n.dirty = -1
 	}
 	return false
 }
@@ -448,7 +448,6 @@ func (n *node) cleanFrom(from *Time) bool {
 				}
 				empty := n.pointers[fromIndex].pointer.cleanFrom(from)
 				if !empty {
-					n.dirty = fromIndex
 					n.pointers[fromIndex].pointer.reduce()
 					n.pointers[fromIndex].pos = n.pointers[fromIndex].pointer.flush()
 
@@ -502,6 +501,7 @@ func (n *node) cleanTo(to *Time) bool {
 				}
 			}
 		}
+		n.dirty = -1
 		if toIndex == len(n.pointers) {
 			return true
 		}

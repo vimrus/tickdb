@@ -113,22 +113,24 @@ func (db *DB) Query(from int64, to int64, level uint16, reducer map[string]strin
 	c.reducer = reducer
 
 	var result []*Point
-	point := c.seek(from)
-	for point != nil && point.Timestamp <= to {
-		result = append(result, point)
-		point = c.next()
+	c.seek(from)
+	for {
+		points := c.points()
+		result = append(result, points...)
+		if c.next() {
+			break
+		}
 	}
+
 	return result
 }
 
 func (db *DB) Get(key int64) (*Point, error) {
 	c := db.Cursor()
 	c.level = LevelNSecond
-	c.reducer = map[string]string{
-		"foot": "avg",
-	}
 
-	point := c.seek(key)
+	c.seek(key)
+	point := c.point()
 	if point.Timestamp == key {
 		return point, nil
 	}
