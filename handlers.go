@@ -33,14 +33,10 @@ func createDB(args []string, w http.ResponseWriter, req *http.Request) {
 
 func dbInfo(args []string, w http.ResponseWriter, req *http.Request) {
 	path := dbPath(args[0])
-	_, err := dbconn(path)
-	if err != nil {
-		emitError(500, w, "Error opening DB", err.Error())
-		return
-	}
 
 	render(200, w, map[string]interface{}{
 		"name": args[0],
+		"path": path,
 	})
 }
 
@@ -101,13 +97,12 @@ func query(args []string, w http.ResponseWriter, req *http.Request) {
 func getDocument(args []string, w http.ResponseWriter, req *http.Request) {
 	path := dbPath(args[0])
 	index := args[1]
-	field := args[2]
-	t, err := timelib.ParseTime(args[3])
+	t, err := timelib.ParseTime(args[2])
 	if err != nil {
 		emitError(400, w, "Bad time format", err.Error())
 	}
-	ts := t.Unix()
-	doc, err := dbget(path, index, field, ts)
+	ts := t.UnixNano()
+	doc, err := dbget(path, index, ts)
 	if err != nil {
 		emitError(500, w, "Server Error", err.Error())
 	} else {
@@ -115,5 +110,58 @@ func getDocument(args []string, w http.ResponseWriter, req *http.Request) {
 	}
 }
 
+func removeIndex(args []string, w http.ResponseWriter, req *http.Request) {
+	path := dbPath(args[0])
+	index := args[1]
+	err := indexdelete(path, index)
+	if err == nil {
+		w.WriteHeader(201)
+	} else {
+		emitError(500, w, "Server Error", err.Error())
+	}
+}
+
 func removeDocuments(args []string, w http.ResponseWriter, req *http.Request) {
+	path := dbPath(args[0])
+	index := args[1]
+
+	result, bodyErr := ioutil.ReadAll(req.Body)
+	if bodyErr != nil {
+		emitError(500, w, "Server Error", bodyErr.Error())
+	}
+	if len(result) == 0 {
+		w.WriteHeader(201)
+		return
+	}
+
+	var query map[string]string
+	json.Unmarshal(result, &query)
+
+	var from, to int64
+
+	if query["from"] != "" && query["to"] != "" {
+		fromTime, err := timelib.ParseTime(query["from"])
+		if err != nil {
+			emitError(500, w, "Time 'from' Error", err.Error())
+			return
+		}
+		from = fromTime.UnixNano()
+
+		toTime, err := timelib.ParseTime(query["to"])
+		if err != nil {
+			emitError(500, w, "Time 'to' Error", err.Error())
+			return
+		}
+		to = toTime.UnixNano()
+	} else {
+		emitError(500, w, "Time 'to' Error", "'from' and 'to' time required")
+		return
+	}
+
+	err := pointremove(path, index, from, to)
+	if err == nil {
+		w.WriteHeader(201)
+	} else {
+		emitError(500, w, "Server Error", err.Error())
+	}
 }

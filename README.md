@@ -42,3 +42,12 @@ curl http://localhost:9527/testdb/_query -d '
     }
 }'
 ```
+
+### Delete data
+```
+curl -XDELETE "http://localhost:9527/testdb/index1" -d '
+{
+"from":"2016-08-00T08:00:00Z",
+"to":"2016-08-31T18:00:59Z"
+}'
+```

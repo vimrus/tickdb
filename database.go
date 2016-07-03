@@ -2,8 +2,8 @@ package main
 
 import (
 	"errors"
-	"github.com/Cistern/catena"
 	"github.com/dustin/seriesly/timelib"
+	"github.com/vimrus/tickdb/storage"
 	"log"
 	"os"
 	"path/filepath"
@@ -13,10 +13,13 @@ import (
 var (
 	ErrDBNotFound  = errors.New("Database not found")
 	ErrDBExists    = errors.New("Database exists")
+	ErrDBCreate    = errors.New("Create database failed")
 	ErrKeyNotFound = errors.New("Key not found")
 )
 
-var dbConns = make(map[string]*catena.DB)
+type indexConns map[string]*storage.DB
+
+var dbConns = make(map[string]indexConns)
 
 type PostData struct {
 	Time  string             `json:"time"`
@@ -29,42 +32,88 @@ func dbcreate(path string) error {
 		return ErrDBExists
 	}
 
-	db, err := catena.NewDB(path, 50000, 100000)
-	dbConns[path] = db
-	return err
+	if err := os.Mkdir(path, 0666); err != nil {
+		return ErrDBCreate
+	}
+
+	return nil
 }
 
-func dbopen(path string) (*catena.DB, error) {
-	return catena.OpenDB(path, 50000, 100000)
+func dbopen(path string) error {
+	if _, err := os.Stat(path); err != nil {
+		return ErrDBNotFound
+	}
+	return nil
 }
 
-func dbconn(path string) (*catena.DB, error) {
-	db := dbConns[path]
-	if db == nil {
-		newDB, err := dbopen(path)
-		if err != nil {
+func dbconn(path, index string) (*storage.DB, error) {
+	if _, ok := dbConns[path]; !ok {
+		if err := dbopen(path); err != nil {
 			return nil, err
 		}
-		dbConns[path] = newDB
-		return newDB, nil
+
+		idx, err := storage.Open(path + "/" + index)
+		dbConns[path] = make(map[string]*storage.DB)
+		dbConns[path][index] = idx
+		return idx, err
 	}
-	return db, nil
+
+	if idx, ok := dbConns[path][index]; !ok {
+		var err error
+		idx, err = storage.Open(path + "/" + index)
+		dbConns[path][index] = idx
+		return idx, err
+	}
+
+	return dbConns[path][index], nil
+}
+
+func dbstore(path string, k int64, data []PostData) error {
+	for _, row := range data {
+		storage, dbErr := dbconn(path, row.Index)
+
+		if dbErr != nil {
+			return dbErr
+		}
+
+		t, err := timelib.ParseTime(row.Time)
+		if err != nil {
+			return err
+		}
+
+		err = storage.Put(t.UnixNano(), row.Value)
+		if err != nil {
+			return nil
+		}
+	}
+	return nil
+}
+
+func dbget(path string, index string, ts int64) (interface{}, error) {
+	db, dbErr := dbconn(path, index)
+	if dbErr != nil {
+		return nil, dbErr
+	}
+
+	point, err := db.Get(ts)
+	if err != nil {
+		return nil, err
+	}
+	return point.Value, nil
+}
+
+func dbquery(path string, query Query) (interface{}, error) {
+	db, dbErr := dbconn(path, query.Index)
+
+	if dbErr != nil {
+		return nil, dbErr
+	}
+
+	return execQuery(db, query)
 }
 
 func dbdelete(path string) error {
 	return os.Remove(path)
-}
-
-func dbBase(path string) string {
-	left := 0
-	right := len(path)
-	if strings.HasPrefix(path, *dbRoot) {
-		left = len(*dbRoot)
-		if path[left] == '/' {
-			left++
-		}
-	}
-	return path[left:right]
 }
 
 func dblist(root string) []string {
@@ -82,61 +131,27 @@ func dblist(root string) []string {
 	return list
 }
 
-func dbstore(path string, k int64, data []PostData) error {
-	db, dbErr := dbconn(path)
+func dbBase(path string) string {
+	left := 0
+	right := len(path)
+	if strings.HasPrefix(path, *dbRoot) {
+		left = len(*dbRoot)
+		if path[left] == '/' {
+			left++
+		}
+	}
+	return path[left:right]
+}
 
+func indexdelete(path, index string) error {
+	return os.Remove(path + "/" + index)
+}
+
+func pointremove(path, index string, from, to int64) error {
+	storage, dbErr := dbconn(path, index)
 	if dbErr != nil {
 		return dbErr
 	}
-
-	rows := []catena.Row{}
-	for _, item := range data {
-		source := item.Index
-		t, err := timelib.ParseTime(item.Time)
-		if err != nil {
-			return err
-		}
-		ts := t.Unix()
-		for metric, value := range item.Value {
-			rows = append(rows, catena.Row{
-				Source: source,
-				Metric: metric,
-				Point: catena.Point{
-					Timestamp: ts,
-					Value:     value,
-				},
-			})
-		}
-	}
-	return db.InsertRows(rows)
-}
-
-func dbget(path string, index string, field string, ts int64) (interface{}, error) {
-	db, dbErr := dbconn(path)
-	if dbErr != nil {
-		return nil, dbErr
-	}
-	
-	i, iErr := db.NewIterator(index, field)
-	if iErr != nil {
-		return nil, iErr
-	}
-	defer i.Close()
-
-	seekErr := i.Seek(ts)
-	if seekErr != nil {
-		return nil, seekErr
-	}
-
-	return i.Point().Value, nil
-}
-
-func dbquery(path string, query Query) (interface{}, error) {
-	db, dbErr := dbconn(path)
-
-	if dbErr != nil {
-		return nil, dbErr
-	}
-
-	return execQuery(db, query)
+	storage.Delete(from, to)
+	return nil
 }

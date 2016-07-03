@@ -369,7 +369,7 @@ func (n *node) clean(from, to *Time) bool {
 			// if from time is the begin of node, drop it directly.
 			if f != from.TS {
 				n.dirty = fromIndex
-				if n.pointers[fromIndex].pointer != nil {
+				if n.pointers[fromIndex].pointer == nil {
 					var err error
 					n.pointers[fromIndex].pointer, err = n.db.node(n.pointers[fromIndex].pos)
 					if err != nil {
@@ -388,31 +388,35 @@ func (n *node) clean(from, to *Time) bool {
 		}
 
 		toIndex := fromIndex
-		for i, pointer := range n.pointers[toIndex:] {
-			if pointer.key >= t {
-				if pointer.key == t {
-					toIndex = fromIndex + i
-					if t != to.TS {
-						if n.pointers[toIndex].pointer == nil {
-							var err error
-							n.pointers[toIndex].pointer, err = n.db.node(n.pointers[toIndex].pos)
-							if err != nil {
-								return true
+		if n.pointers[len(n.pointers)-1].key < t {
+			n.pointers = n.pointers[:fromIndex]
+		} else {
+			for i, pointer := range n.pointers[toIndex:] {
+				if pointer.key >= t {
+					if pointer.key == t {
+						toIndex = fromIndex + i
+						if t != to.TS {
+							if n.pointers[toIndex].pointer == nil {
+								var err error
+								n.pointers[toIndex].pointer, err = n.db.node(n.pointers[toIndex].pos)
+								if err != nil {
+									return true
+								}
 							}
+							empty := n.pointers[toIndex].pointer.cleanTo(to)
+							if !empty {
+								n.pointers[toIndex].pointer.reduce()
+								n.pointers[toIndex].pos = n.pointers[toIndex].pointer.flush()
+							} else {
+								toIndex++
+							}
+							break
 						}
-						empty := n.pointers[toIndex].pointer.cleanTo(to)
-						if !empty {
-							n.pointers[toIndex].pointer.reduce()
-							n.pointers[toIndex].pos = n.pointers[toIndex].pointer.flush()
-						} else {
-							toIndex++
-						}
-						break
 					}
 				}
 			}
+			n.pointers = append(n.pointers[:fromIndex], n.pointers[toIndex:]...)
 		}
-		n.pointers = append(n.pointers[:fromIndex], n.pointers[toIndex:]...)
 		if len(n.pointers) == 0 {
 			return true
 		}
@@ -436,6 +440,9 @@ func (n *node) cleanFrom(from *Time) bool {
 			return n.pointers[i].key >= f
 		})
 
+		if fromIndex >= len(n.pointers) {
+			return false
+		}
 		if n.pointers[fromIndex].key == f {
 			// if from time is the begin of node, drop it directly.
 			if f != from.TS {

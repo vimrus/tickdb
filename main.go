@@ -27,11 +27,12 @@ var routing = []router{
 	router{"GET", "^/_all_dbs$", listDatabases},
 	router{"GET", "^/([-%+()$_a-zA-Z-1-9]+)/?$", dbInfo},
 	router{"PUT", "^/([-%+()$_a-zA-Z0-9]+)/?$", createDB},
-	router{"DELETE", "^/([-%+()$_a-zA-Z0-9]+)/?$", deleteDB},
+	router{"DELETE", "^/([-%+()$_a-zA-Z0-9]+)/_all$", deleteDB},
 
 	router{"POST", "^/([-%+()$_a-zA-Z0-9]+)/_query$", query},
 	router{"POST", "^/([-%+()$_a-zA-Z0-9]+)/?$", putDocuments},
-	router{"GET", "^/([-%+()$_a-zA-Z0-9]+)/([^/]+)/([^/]+)/([^/]+)$", getDocument},
+	router{"GET", "^/([-%+()$_a-zA-Z0-9]+)/([^/]+)/([^/]+)$", getDocument},
+	router{"DELETE", "^/([-%+()$_a-zA-Z0-9]+)/([^/]+)/_all$", removeIndex},
 	router{"DELETE", "^/([-%+()$_a-zA-Z0-9]+)/([^/]+)$", removeDocuments},
 }
 

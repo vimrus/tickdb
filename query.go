@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/Cistern/catena"
 	"github.com/dustin/seriesly/timelib"
+	"github.com/vimrus/tickdb/storage"
 	"strconv"
 )
 
@@ -17,32 +17,45 @@ type Query struct {
 	Fields map[string]Field `json:"fields"`
 }
 
-func parseGroup(group string) int64 {
-	var chunk int64
+func parseGroup(group string) (int, uint16) {
+	var count int
+	var level uint16
 
 	for i, value := range []byte(group) {
-		// number between 48~57
+		// number is between 48~57
 		if value < 48 || value > 57 {
-			chunk, _ = strconv.ParseInt(string([]byte(group)[0:i]), 10, 64)
+			count, _ = strconv.Atoi(string([]byte(group)[0:i]))
 			unit := string([]byte(group)[i:])
 			switch unit {
+			case "second":
+				fallthrough
+			case "seconds":
+				level = storage.LevelMinute
 			case "minute":
 				fallthrough
 			case "minutes":
-				chunk = chunk * 60
+				level = storage.LevelMinute
 			case "hour":
 				fallthrough
 			case "hours":
-				chunk = chunk * 3600
+				level = storage.LevelHour
 			case "day":
 				fallthrough
 			case "days":
-				chunk = chunk * 86400
+				level = storage.LevelDay
+			case "month":
+				fallthrough
+			case "months":
+				level = storage.LevelMonth
+			case "year":
+				fallthrough
+			case "years":
+				level = storage.LevelYear
 			}
 			break
 		}
 	}
-	return chunk
+	return count, level
 }
 
 /*
@@ -57,169 +70,29 @@ func parseGroup(group string) int64 {
 		}
 	}'
 */
-func execQuery(db *catena.DB, query Query) (interface{}, error) {
+func execQuery(db *storage.DB, query Query) (interface{}, error) {
 	//from
 	from, fromErr := timelib.ParseTime(query.From)
 	if fromErr != nil {
 		return nil, fromErr
 	}
-	fromTS := from.Unix()
+	fromTS := from.UnixNano()
 
 	//to
 	to, toErr := timelib.ParseTime(query.To)
 	if toErr != nil {
 		return nil, toErr
 	}
-	toTS := to.Unix()
+	toTS := to.UnixNano()
 
 	//group
-	chunk := parseGroup(query.Group)
+	count, level := parseGroup(query.Group)
 
-	var data []map[string]interface{}
+	reducer := make(map[string]string)
+
 	//fields
 	for field, opts := range query.Fields {
-		var timestamps []int64
-		var result []float64
-
-		reducer := opts.Reducer
-		i, iErr := db.NewIterator(query.Index, field)
-		defer i.Close()
-
-		if iErr != nil {
-			return nil, iErr
-		}
-		seekErr := i.Seek(fromTS)
-		if seekErr != nil {
-			return nil, seekErr
-		}
-		offset := fromTS
-		ts := i.Point().Timestamp
-
-		switch reducer {
-		case "first":
-			for ts <= toTS {
-				if ts >= offset {
-					timestamps = append(timestamps, i.Point().Timestamp)
-					result = append(result, i.Point().Value)
-					offset = offset + chunk
-				}
-				seekErr = i.Next()
-				if seekErr != nil {
-					break
-				}
-				ts = i.Point().Timestamp
-			}
-		case "last":
-			for ts <= toTS {
-				if ts >= offset {
-					timestamps = append(timestamps, i.Point().Timestamp)
-					result = append(result, i.Point().Value)
-					offset = offset + chunk
-				} else {
-					result[len(result)-1] = i.Point().Value
-				}
-
-				seekErr = i.Next()
-				if seekErr != nil {
-					break
-				}
-
-				ts = i.Point().Timestamp
-			}
-		case "count":
-			for ts <= toTS {
-				if ts >= offset {
-					timestamps = append(timestamps, i.Point().Timestamp)
-					result = append(result, 1)
-					offset = offset + chunk
-				} else {
-					result[len(result)-1]++
-				}
-
-				seekErr = i.Next()
-				if seekErr != nil {
-					break
-				}
-
-				ts = i.Point().Timestamp
-			}
-		case "max":
-			for ts <= toTS {
-				if ts >= offset {
-					timestamps = append(timestamps, i.Point().Timestamp)
-					result = append(result, i.Point().Value)
-					offset = offset + chunk
-				} else {
-					if result[len(result)-1] < i.Point().Value {
-						result[len(result)-1] = i.Point().Value
-					}
-				}
-
-				seekErr = i.Next()
-				if seekErr != nil {
-					break
-				}
-
-				ts = i.Point().Timestamp
-			}
-		case "min":
-			for ts <= toTS {
-				if ts >= offset {
-					timestamps = append(timestamps, i.Point().Timestamp)
-					result = append(result, i.Point().Value)
-					offset = offset + chunk
-				} else {
-					if result[len(result)-1] > i.Point().Value {
-						result[len(result)-1] = i.Point().Value
-					}
-				}
-
-				seekErr = i.Next()
-				if seekErr != nil {
-					break
-				}
-
-				ts = i.Point().Timestamp
-			}
-		case "avg":
-			sum := 0.0
-			count := 0
-			for ts <= toTS {
-				if ts >= offset {
-					sum = i.Point().Value
-					count = 1
-					timestamps = append(timestamps, i.Point().Timestamp)
-					result = append(result, sum)
-					offset = offset + chunk
-				} else {
-					count++
-					sum = sum + i.Point().Value
-					result[len(result)-1] = sum / float64(count)
-				}
-
-				seekErr = i.Next()
-				if seekErr != nil {
-					break
-				}
-
-				ts = i.Point().Timestamp
-			}
-		}
-
-		if len(data) == 0 {
-			for i, v := range result {
-				item := make(map[string]interface{})
-				item[field] = v
-				ts := strconv.FormatInt(timestamps[i], 10)
-				item["timestamp"] = ts
-				data = append(data, item)
-			}
-		} else {
-			for i, v := range result {
-				data[i][field] = v
-			}
-		}
+		reducer[field] = opts.Reducer
 	}
-
-	return data, nil
+	return db.Query(fromTS, toTS, level, count, reducer), nil
 }

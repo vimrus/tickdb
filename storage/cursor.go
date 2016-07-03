@@ -167,7 +167,7 @@ func (c *Cursor) points() []*Point {
 		return points
 	}
 	for i := ref.index; i < ref.count(); i++ {
-		points = append(points, ref.point(c.reducer))
+		points = append(points, ref.reduce(c.reducer))
 	}
 	return points
 }
@@ -175,10 +175,13 @@ func (c *Cursor) points() []*Point {
 // keyValue returns the key and value of the current cursor.
 func (c *Cursor) point() *Point {
 	ref := &c.stack[len(c.stack)-1]
-	if ref.count() == 0 || ref.index >= ref.count() {
-		return nil
+	if ref.isLeaf() {
+		if ref.count() == 0 || ref.index >= ref.count() {
+			return nil
+		}
+		return ref.node.points[ref.index]
 	}
-	return ref.point(c.reducer)
+	return nil
 }
 
 // search recursively performs a binary search against a given node until it finds a given key.
@@ -263,7 +266,7 @@ func (r *elemRef) count() int {
 	return len(r.node.pointers)
 }
 
-func (r *elemRef) point(reducer map[string]string) *Point {
+func (r *elemRef) reduce(reducer map[string]string) *Point {
 	if r.isLeaf() {
 		point := r.node.points[r.index]
 		value := make(map[string]float64)

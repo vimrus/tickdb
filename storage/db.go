@@ -107,7 +107,7 @@ func (db *DB) Path() string {
 }
 
 // Build a query
-func (db *DB) Query(from int64, to int64, level uint16, reducer map[string]string) []*Point {
+func (db *DB) Query(from int64, to int64, level uint16, count int, reducer map[string]string) []*Point {
 	c := db.Cursor()
 	c.level = level
 	c.reducer = reducer
@@ -121,7 +121,6 @@ func (db *DB) Query(from int64, to int64, level uint16, reducer map[string]strin
 			break
 		}
 	}
-
 	return result
 }
 
