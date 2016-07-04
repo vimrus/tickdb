@@ -229,21 +229,24 @@ func (n *node) insertPoint(t *Time, value map[string]float64) error {
 	index := sort.Search(len(n.points), func(i int) bool {
 		return n.points[i].Timestamp >= t.TS
 	})
-	if n.points[index].Timestamp == t.TS {
-		n.points[index].Value = value
+	if index >= len(n.points) {
+		n.points = append(n.points, &Point{Timestamp: t.TS, Value: value})
 	} else {
-		n.points = append(n.points, &Point{})
-		copy(n.points[index+1:], n.points[index:])
+		if n.points[index].Timestamp == t.TS {
+			n.points[index].Value = value
+		} else {
+			n.points = append(n.points, &Point{})
+			copy(n.points[index+1:], n.points[index:])
 
-		n.points[index] = &Point{Timestamp: t.TS, Value: value}
+			n.points[index] = &Point{Timestamp: t.TS, Value: value}
+		}
 	}
 
 	return nil
 }
 
 func (n *node) insertNode(t *Time, value map[string]float64) error {
-	_assert(t.Level()>>2 >= n.level, "insertNode must bigger than parent of point")
-	if t.Level()>>2 == n.level {
+	if t.Level()>>2 <= n.level {
 		leafNode := n.db.newLeafNode()
 		leafNode.parent = n
 		leafNode.level = n.level << 1
@@ -263,7 +266,7 @@ func (n *node) insertNode(t *Time, value map[string]float64) error {
 		}
 
 		np := nodePointer{
-			key:     t.Timestamp(n.level << 1).UnixNano(),
+			key:     t.Timestamp(n.level << 1),
 			pointer: leafNode,
 		}
 		n.pointers[index] = &np
@@ -287,7 +290,7 @@ func (n *node) insertNode(t *Time, value map[string]float64) error {
 	}
 
 	np := nodePointer{
-		key:     t.Timestamp(n.level << 1).UnixNano(),
+		key:     t.Timestamp(n.level << 1),
 		pointer: interiorNode,
 	}
 	n.pointers[index] = &np
@@ -331,8 +334,8 @@ func (n *node) clean(from, to *Time) bool {
 		return false
 	}
 
-	f := from.Timestamp(n.level << 1).UnixNano()
-	t := to.Timestamp(n.level << 1).UnixNano()
+	f := from.Timestamp(n.level << 1)
+	t := to.Timestamp(n.level << 1)
 	// if from and to in the same node, step in.
 	if f == t {
 		index := sort.Search(len(n.pointers), func(i int) bool {
@@ -435,7 +438,7 @@ func (n *node) cleanFrom(from *Time) bool {
 		n.points = n.points[:index]
 		return false
 	} else {
-		f := from.Timestamp(n.level << 1).UnixNano()
+		f := from.Timestamp(n.level << 1)
 		fromIndex := sort.Search(len(n.pointers), func(i int) bool {
 			return n.pointers[i].key >= f
 		})
@@ -482,7 +485,7 @@ func (n *node) cleanTo(to *Time) bool {
 		n.points = n.points[index:]
 		return false
 	} else {
-		t := to.Timestamp(n.level << 1).UnixNano()
+		t := to.Timestamp(n.level << 1)
 		toIndex := sort.Search(len(n.pointers), func(i int) bool {
 			return n.pointers[i].key >= t
 		})

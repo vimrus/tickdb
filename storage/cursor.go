@@ -17,7 +17,7 @@ func (c *Cursor) fix(t *Time, n *node) error {
 	c.stack = append(c.stack, e)
 
 	if e.isLeaf() {
-		if t.Level()>>1 == n.level {
+		if t.Level()>>1 <= n.level {
 			return nil
 		}
 		n.expand()
@@ -26,7 +26,7 @@ func (c *Cursor) fix(t *Time, n *node) error {
 	if len(n.pointers) == 0 {
 		return nil
 	}
-	ts := t.Timestamp(n.level << 1).UnixNano()
+	ts := t.Timestamp(n.level << 1)
 	index := sort.Search(len(n.pointers), func(i int) bool {
 		return n.pointers[i].key >= ts
 	})
@@ -200,7 +200,7 @@ func (c *Cursor) search(t *Time, n *node) error {
 func (c *Cursor) searchInterior(t *Time) {
 	e := &c.stack[len(c.stack)-1]
 	n := e.node
-	ts := t.Timestamp(n.level << 1).UnixNano()
+	ts := t.Timestamp(n.level << 1)
 	index := sort.Search(len(n.pointers), func(i int) bool {
 		return n.pointers[i].key >= ts
 	})
@@ -228,7 +228,7 @@ func (c *Cursor) searchInterior(t *Time) {
 func (c *Cursor) searchLeaf(t *Time) {
 	e := &c.stack[len(c.stack)-1]
 	n := e.node
-	ts := t.Timestamp(n.level << 1).UnixNano()
+	ts := t.Timestamp(n.level << 1)
 	index := sort.Search(len(n.points), func(i int) bool {
 		return n.points[i].Timestamp >= ts
 	})

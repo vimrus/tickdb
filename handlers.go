@@ -63,16 +63,17 @@ func putDocuments(args []string, w http.ResponseWriter, req *http.Request) {
 	result, bodyErr := ioutil.ReadAll(req.Body)
 	if bodyErr != nil {
 		emitError(500, w, "Server Error", bodyErr.Error())
+	} else {
+		var data []PostData
+		json.Unmarshal(result, &data)
+		err := dbstore(path, ts, data)
+		if err != nil {
+			emitError(500, w, "Server Error", err.Error())
+		} else {
+			render(200, w, "success")
+		}
 	}
 
-	var data []PostData
-	json.Unmarshal(result, &data)
-	err := dbstore(path, ts, data)
-	if err != nil {
-		emitError(500, w, "Server Error", err.Error())
-	}
-
-	render(200, w, "success")
 }
 
 func query(args []string, w http.ResponseWriter, req *http.Request) {
@@ -81,16 +82,16 @@ func query(args []string, w http.ResponseWriter, req *http.Request) {
 	result, bodyErr := ioutil.ReadAll(req.Body)
 	if bodyErr != nil {
 		emitError(500, w, "Server Error", bodyErr.Error())
-	}
-
-	var query Query
-	json.Unmarshal(result, &query)
-
-	data, err := dbquery(path, query)
-	if err != nil {
-		emitError(500, w, "Server Error", err.Error())
 	} else {
-		render(200, w, data)
+		var query Query
+		json.Unmarshal(result, &query)
+
+		data, err := dbquery(path, query)
+		if err != nil {
+			emitError(500, w, "Server Error", err.Error())
+		} else {
+			render(200, w, data)
+		}
 	}
 }
 
@@ -100,13 +101,14 @@ func getDocument(args []string, w http.ResponseWriter, req *http.Request) {
 	t, err := timelib.ParseTime(args[2])
 	if err != nil {
 		emitError(400, w, "Bad time format", err.Error())
-	}
-	ts := t.UnixNano()
-	doc, err := dbget(path, index, ts)
-	if err != nil {
-		emitError(500, w, "Server Error", err.Error())
 	} else {
-		render(200, w, doc)
+		ts := t.UnixNano()
+		doc, err := dbget(path, index, ts)
+		if err != nil {
+			emitError(500, w, "Server Error", err.Error())
+		} else {
+			render(200, w, doc)
+		}
 	}
 }
 
@@ -128,6 +130,7 @@ func removeDocuments(args []string, w http.ResponseWriter, req *http.Request) {
 	result, bodyErr := ioutil.ReadAll(req.Body)
 	if bodyErr != nil {
 		emitError(500, w, "Server Error", bodyErr.Error())
+		return
 	}
 	if len(result) == 0 {
 		w.WriteHeader(201)
@@ -137,31 +140,27 @@ func removeDocuments(args []string, w http.ResponseWriter, req *http.Request) {
 	var query map[string]string
 	json.Unmarshal(result, &query)
 
-	var from, to int64
-
 	if query["from"] != "" && query["to"] != "" {
 		fromTime, err := timelib.ParseTime(query["from"])
 		if err != nil {
 			emitError(500, w, "Time 'from' Error", err.Error())
 			return
 		}
-		from = fromTime.UnixNano()
+		from := fromTime.UnixNano()
 
 		toTime, err := timelib.ParseTime(query["to"])
 		if err != nil {
 			emitError(500, w, "Time 'to' Error", err.Error())
-			return
+		} else {
+			to := toTime.UnixNano()
+			err := pointremove(path, index, from, to)
+			if err == nil {
+				w.WriteHeader(201)
+			} else {
+				emitError(500, w, "Server Error", err.Error())
+			}
 		}
-		to = toTime.UnixNano()
 	} else {
 		emitError(500, w, "Time 'to' Error", "'from' and 'to' time required")
-		return
-	}
-
-	err := pointremove(path, index, from, to)
-	if err == nil {
-		w.WriteHeader(201)
-	} else {
-		emitError(500, w, "Server Error", err.Error())
 	}
 }

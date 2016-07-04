@@ -47,7 +47,7 @@ func (t *Time) Level() uint16 {
 	return LevelYear
 }
 
-func (t *Time) Timestamp(level uint16) time.Time {
+func (t *Time) Timestamp(level uint16) int64 {
 	var tp string
 	var tm time.Time
 	switch level {
@@ -76,6 +76,6 @@ func (t *Time) Timestamp(level uint16) time.Time {
 	default:
 		tm = t.Time
 	}
-	return tm
 
+	return tm.UnixNano()
 }
