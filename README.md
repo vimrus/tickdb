@@ -1,8 +1,8 @@
 # TickDB: A Timeseries Database
 
-TickDB is a database for recording  and querying time series data.
+TickDB is a database for recording and querying time series data.
 
-##Features
+## Features
 
  * Built-in HTTP API
  * Indexing for group(second, minute, day ...)
